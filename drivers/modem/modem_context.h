@@ -70,6 +70,10 @@ struct modem_context {
 
 	/* driver data */
 	void *driver_data;
+#if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS)
+	struct k_work_delayable gps_query_work;
+	uint32_t gps_query_location_rate_seconds;
+#endif // CONFIG_MODEM_QUECTEL_BG9X_GPS
 };
 
 /**

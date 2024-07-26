@@ -880,9 +880,24 @@ static void modem_rssi_query_work(struct k_work *work)
 
 	/* Re-start RSSI query work */
 	if (work) {
-		k_work_reschedule_for_queue(&modem_workq,
+		if (mdata.mdm_rssi >= 0 || mdata.mdm_rssi < -1000) {
+			LOG_DBG("RSSI value out of range: %d", mdata.mdm_rssi);
+			k_work_reschedule_for_queue(&modem_workq,
+						    &mdata.rssi_query_work,
+						    MDM_WAIT_FOR_RSSI_DELAY);
+		} else {
+			/* Reschedule the work */
+			k_work_reschedule_for_queue(&modem_workq,
 					    &mdata.rssi_query_work,
 					    K_SECONDS(RSSI_TIMEOUT_SECS));
+			k_work_reschedule_for_queue(&modem_workq,
+					    &mdata.pdp_context_work,
+					    MDM_WAIT_FOR_PDP_DELAY);
+			/* GPS */
+			k_work_reschedule_for_queue(&modem_workq,
+					    &mdata.gps_query_work,
+						MDM_GPS_DELAY);
+		}
 	}
 }
 
@@ -965,6 +980,9 @@ static const struct setup_cmd setup_cmds[] = {
 #endif /* #if defined(CONFIG_MODEM_SIM_NUMBERS) */
 	SETUP_CMD_NOHANDLE("AT+QICSGP=1,1,\"" MDM_APN "\",\""
 			   MDM_USERNAME "\",\"" MDM_PASSWORD "\",1"),
+#if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS)
+	SETUP_CMD("AT+QGPS=2", "", NULL, 0U, ""),
+#endif
 };
 
 /* Func: modem_pdp_context_active
@@ -976,35 +994,63 @@ static const struct setup_cmd setup_cmds[] = {
 static int modem_pdp_context_activate(void)
 {
 	int ret;
-	int retry_count = 0;
 
+	LOG_DBG("Send Activating PDP Context");
 	ret = modem_cmd_send(&mctx.iface, &mctx.cmd_handler,
 			     NULL, 0U, "AT+QIACT=1", &mdata.sem_response,
 			     MDM_CMD_TIMEOUT);
 
 	/* If there is trouble activating the PDP context, we try to deactivate/reactive it. */
-	while (ret == -EIO && retry_count < MDM_PDP_ACT_RETRY_COUNT) {
+	LOG_DBG("Received PDP Context Activation: %d", ret);
+	if (ret == -EIO) {
+		LOG_ERR("Error activating PDP context. Deactivating and retrying.");
 		ret = modem_cmd_send(&mctx.iface, &mctx.cmd_handler,
 			     NULL, 0U, "AT+QIDEACT=1", &mdata.sem_response,
 			     MDM_CMD_TIMEOUT);
-
+		LOG_DBG("PDP Context Deactivation return: %d", ret);
 		/* If there's any error for AT+QIDEACT, restart the module. */
 		if (ret != 0) {
+			LOG_ERR("Error deactivating PDP context. Restarting modem.");
 			return ret;
 		}
-
-		ret = modem_cmd_send(&mctx.iface, &mctx.cmd_handler,
-			     NULL, 0U, "AT+QIACT=1", &mdata.sem_response,
-			     MDM_CMD_TIMEOUT);
-
-		retry_count++;
-	}
-
-	if (ret == -EIO && retry_count >= MDM_PDP_ACT_RETRY_COUNT) {
-		LOG_ERR("Retried activating/deactivating too many times.");
 	}
 
 	return ret;
+}
+
+static void modem_pdp_context_activate_work(struct k_work *work)
+{
+	int ret;
+
+	ARG_UNUSED(work);
+
+	if (mdata.pdp_context_active) {
+		LOG_DBG("PDP context already active");
+		return;
+	}
+
+	ret = modem_pdp_context_activate();
+	if (ret < 0) {
+		LOG_ERR("Error activating PDP context: %d", ret);
+	}
+
+	mdata.pdp_context_active = true;
+}
+
+static void modem_gps_work(struct k_work *work)
+{
+	int ret;
+
+	ARG_UNUSED(work);
+
+	ret = modem_cmd_send(&mctx.iface, &mctx.cmd_handler,
+			     NULL, 0U, "AT+QGPSLOC=2", &mdata.sem_response,
+			     MDM_CMD_TIMEOUT);
+	if (ret < 0) {
+		LOG_ERR("Error sending AT+QGPSLOC=2: %d", ret);
+	}
+
+	k_work_reschedule_for_queue(&modem_workq, &mdata.gps_query_work, MDM_GPS_DELAY);
 }
 
 /* Func: modem_setup
@@ -1014,18 +1060,10 @@ static int modem_pdp_context_activate(void)
  */
 static int modem_setup(void)
 {
-	int ret = 0, counter;
-	int rssi_retry_count = 0, init_retry_count = 0;
+	int ret = 0;
 
 	/* Setup the pins to ensure that Modem is enabled. */
 	pin_init();
-
-restart:
-
-	counter = 0;
-
-	/* stop RSSI delay work */
-	k_work_cancel_delayable(&mdata.rssi_query_work);
 
 	/* Let the modem respond. */
 	LOG_INF("Waiting for modem to respond");
@@ -1041,47 +1079,6 @@ restart:
 					   &mdata.sem_response, MDM_REGISTRATION_TIMEOUT);
 	if (ret < 0) {
 		goto error;
-	}
-
-restart_rssi:
-
-	/* query modem RSSI */
-	modem_rssi_query_work(NULL);
-	k_sleep(MDM_WAIT_FOR_RSSI_DELAY);
-
-	/* Keep trying to read RSSI until we get a valid value - Eventually, exit. */
-	while (counter++ < MDM_WAIT_FOR_RSSI_COUNT &&
-	      (mdata.mdm_rssi >= 0 || mdata.mdm_rssi <= -1000)) {
-		modem_rssi_query_work(NULL);
-		k_sleep(MDM_WAIT_FOR_RSSI_DELAY);
-	}
-
-	/* Is the RSSI invalid ? */
-	if (mdata.mdm_rssi >= 0 || mdata.mdm_rssi <= -1000) {
-		rssi_retry_count++;
-
-		if (rssi_retry_count >= MDM_NETWORK_RETRY_COUNT) {
-			LOG_ERR("Failed network init. Too many attempts!");
-			ret = -ENETUNREACH;
-			goto error;
-		}
-
-		/* Try again! */
-		LOG_ERR("Failed network init. Restarting process.");
-		counter = 0;
-		goto restart_rssi;
-	}
-
-	/* Network is ready - Start RSSI work in the background. */
-	LOG_INF("Network is ready.");
-	k_work_reschedule_for_queue(&modem_workq, &mdata.rssi_query_work,
-				    K_SECONDS(RSSI_TIMEOUT_SECS));
-
-	/* Once the network is ready, we try to activate the PDP context. */
-	ret = modem_pdp_context_activate();
-	if (ret < 0 && init_retry_count++ < MDM_INIT_RETRY_COUNT) {
-		LOG_ERR("Error activating modem with pdp context");
-		goto restart;
 	}
 
 error:
@@ -1273,8 +1270,17 @@ static int modem_init(const struct device *dev)
 
 	/* Init RSSI query */
 	k_work_init_delayable(&mdata.rssi_query_work, modem_rssi_query_work);
-	return modem_setup();
 
+	/* Init PDP activate */
+	k_work_init_delayable(&mdata.pdp_context_work, modem_pdp_context_activate_work);
+
+#if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS)
+	k_work_init_delayable(&mdata.gps_query_work, modem_gps_work);
+#endif				 
+	ret = modem_setup();
+
+	k_work_reschedule_for_queue(&modem_workq, &mdata.rssi_query_work,
+			MDM_WAIT_FOR_RSSI_DELAY);
 error:
 	return ret;
 }

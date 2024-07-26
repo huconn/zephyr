@@ -16,6 +16,9 @@ config MODEM_QUECTEL_BG9X
 
 if MODEM_QUECTEL_BG9X
 
+config MODEM_QUECTEL_BG9X_GPS
+    bool "GPS command and handlers"
+
 config MODEM_QUECTEL_BG9X_RX_STACK_SIZE
 	int "Stack size for the quectel BG9X modem driver RX thread"
 	default 1028
