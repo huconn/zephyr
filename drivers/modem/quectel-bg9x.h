@@ -40,8 +40,10 @@
 #define MDM_PDP_ACT_RETRY_COUNT		  3
 #define MDM_WAIT_FOR_RSSI_COUNT		  10
 #define MDM_WAIT_FOR_RSSI_DELAY		  K_SECONDS(2)
+#define MDM_WAIT_FOR_PDP_DELAY		  K_SECONDS(2)
 #define BUF_ALLOC_TIMEOUT		  K_SECONDS(1)
 #define MDM_MAX_BOOT_TIME		  K_SECONDS(50)
+#define MDM_GPS_DELAY			  K_SECONDS(5)
 
 /* Default lengths of certain things. */
 #define MDM_MANUFACTURER_LENGTH		  10
@@ -93,6 +95,16 @@ struct modem_data {
 	/* RSSI work */
 	struct k_work_delayable rssi_query_work;
 
+	/* PDP work */
+	struct k_work_delayable pdp_context_work;
+
+	/* GNSS work */
+#if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS)
+	struct k_work_delayable gps_query_work;
+	uint32_t gps_query_location_rate_seconds;
+	char gps_nmea_sentence[MDM_MAX_DATA_LENGTH];
+#endif /* #if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS) */
+
 	/* modem data */
 	char mdm_manufacturer[MDM_MANUFACTURER_LENGTH];
 	char mdm_model[MDM_MODEL_LENGTH];
@@ -103,6 +115,9 @@ struct modem_data {
 	char mdm_iccid[MDM_ICCID_LENGTH];
 #endif /* #if defined(CONFIG_MODEM_SIM_NUMBERS) */
 	int mdm_rssi;
+
+	/* modem PDP context data */
+	int pdp_context_active;
 
 	/* bytes written to socket in last transaction */
 	int sock_written;
