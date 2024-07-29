@@ -63,6 +63,9 @@
 /* Modem ATOI routine. */
 #define ATOI(s_, value_, desc_)	  modem_atoi(s_, value_, desc_, __func__)
 
+/* Modem ATOF routine. */
+#define ATOF(s_, value_, desc_)	  modem_atof(s_, value_, desc_, __func__)
+
 /* pin settings */
 enum mdm_control_pins {
 	MDM_POWER = 0,
@@ -73,6 +76,33 @@ enum mdm_control_pins {
 #if DT_INST_NODE_HAS_PROP(0, mdm_wdisable_gpios)
 	MDM_WDISABLE,
 #endif
+};
+/*
+	 * @brief Quectel BG9X GPS data
+	float utc;
+	float latitude;
+	float longitude;
+	float hdop;
+	float altitude;
+	int fix;
+	float cog;
+	float spkm;
+	float spkn;
+	int date;
+	int nsat;
+ */
+struct modem_gps_data {
+	float utc;			// UTC time
+	float latitude; 	// Latitude
+	float longitude; 	// Longitude
+	float hdop;			// Horizontal Dilution of Precision
+	float altitude;     // Altitude
+	int fix;			// Fix
+	float cog;			// Course Over Ground
+	float spkm;			// Speed Over Ground (km/h)
+	float spkn;			// Speed Over Ground (knots)
+	int date;			// Date
+	int nsat;			// Number of satellites
 };
 
 /* driver data */
@@ -102,7 +132,13 @@ struct modem_data {
 #if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS)
 	struct k_work_delayable gps_query_work;
 	uint32_t gps_query_location_rate_seconds;
-	char gps_nmea_sentence[MDM_MAX_DATA_LENGTH];
+	
+	/* GNSS data */
+	struct modem_gps_data gps_data;
+
+	/* GNSS semaphore */
+	struct k_sem sem_gps_data_ready;
+
 #endif /* #if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS) */
 
 	/* modem data */

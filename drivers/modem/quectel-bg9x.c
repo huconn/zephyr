@@ -93,6 +93,26 @@ static int modem_atoi(const char *s, const int err_value,
 	return ret;
 }
 
+/*
+ * Func: modem_atof
+ * Desc: Convert string to float, but handle errors
+ */
+static float modem_atof(const char *s, const float err_value,
+		      const char *desc, const char *func)
+{
+	float ret;
+	char  *endptr;
+
+	ret = strtof(s, &endptr);
+	if (!endptr || *endptr != '\0') {
+		LOG_ERR("bad %s '%s' in %s", s, desc,
+			func);
+		return err_value;
+	}
+
+	return ret;
+}
+
 static inline int find_len(char *data)
 {
 	char buf[10] = {0};
@@ -433,6 +453,59 @@ MODEM_CMD_DEFINE(on_cmd_unsol_rdy)
 	k_sem_give(&mdata.sem_response);
 	return 0;
 }
+
+#if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS)
+/* Handler: +QGPSLOC: (UTC),(latitude),(longitude),(hdop),(altitude),(fix),(cog),(spkm),(spkn),(date),(nsat) */
+MODEM_CMD_DEFINE(on_cmd_gps_data)
+{
+	int ret;
+	float utc;
+	float latitude;
+	float longitude;
+	float hdop;
+	float altitude;
+	int fix;
+	float cog;
+	float spkm;
+	float spkn;
+	int date;
+	int nsat;
+
+	utc = ATOF(argv[0], 0, "utc");
+	latitude = ATOF(argv[1], 0, "latitude");
+	longitude = ATOF(argv[2], 0, "longitude");
+	hdop = ATOF(argv[3], 0, "hdop");
+	altitude = ATOF(argv[4], 0, "altitude");
+	fix = ATOI(argv[5], 0, "fix");
+	cog = ATOF(argv[6], 0, "cog");
+	spkm = ATOF(argv[7], 0, "spkm");
+	spkn = ATOF(argv[8], 0, "spkn");
+	date = ATOI(argv[9], 0, "date");
+	nsat = ATOI(argv[10], 0, "nsat");
+
+	/* Log the received information. */
+	LOG_INF("GPS Data: UTC:%f, Lat:%f, Long:%f, HDOP:%f, Alt:%f, Fix:%d, COG:%f, SPKM:%f, SPKN:%f, Date:%d, NSAT:%d",
+		utc, latitude, longitude, hdop, altitude, fix, cog, spkm, spkn, date, nsat);
+	
+	/* Update the GPS data */
+	mdata.gps_data.utc = utc;
+	mdata.gps_data.latitude = latitude;
+	mdata.gps_data.longitude = longitude;
+	mdata.gps_data.hdop = hdop;
+	mdata.gps_data.altitude = altitude;
+	mdata.gps_data.fix = fix;
+	mdata.gps_data.cog = cog;
+	mdata.gps_data.spkm = spkm;
+	mdata.gps_data.spkn = spkn;
+	mdata.gps_data.date = date;
+	mdata.gps_data.nsat = nsat;
+
+	/* Notify the GPS data is ready */
+	// k_sem_give(&mdata.sem_gps_data_ready);
+	k_sem_give(&mdata.sem_response);
+	return 0;
+}
+#endif
 
 /* Func: send_socket_data
  * Desc: This function will send "binary" data over the socket object.
@@ -893,10 +966,12 @@ static void modem_rssi_query_work(struct k_work *work)
 			k_work_reschedule_for_queue(&modem_workq,
 					    &mdata.pdp_context_work,
 					    MDM_WAIT_FOR_PDP_DELAY);
+#if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS)
 			/* GPS */
 			k_work_reschedule_for_queue(&modem_workq,
 					    &mdata.gps_query_work,
 						MDM_GPS_DELAY);
+#endif
 		}
 	}
 }
@@ -954,6 +1029,10 @@ static const struct modem_cmd response_cmds[] = {
 	MODEM_CMD("OK", on_cmd_ok, 0U, ""),
 	MODEM_CMD("ERROR", on_cmd_error, 0U, ""),
 	MODEM_CMD("+CME ERROR: ", on_cmd_exterror, 1U, ""),
+#if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS)
+	MODEM_CMD("+QGPSLOC: ", on_cmd_gps_data, 11U, ","),
+#endif
+
 };
 
 static const struct modem_cmd unsol_cmds[] = {
@@ -981,7 +1060,7 @@ static const struct setup_cmd setup_cmds[] = {
 	SETUP_CMD_NOHANDLE("AT+QICSGP=1,1,\"" MDM_APN "\",\""
 			   MDM_USERNAME "\",\"" MDM_PASSWORD "\",1"),
 #if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS)
-	SETUP_CMD("AT+QGPS=2", "", NULL, 0U, ""),
+	SETUP_CMD("AT+QGPS=1", "", NULL, 0U, ""),
 #endif
 };
 
@@ -1037,6 +1116,7 @@ static void modem_pdp_context_activate_work(struct k_work *work)
 	mdata.pdp_context_active = true;
 }
 
+#if defined(CONFIG_MODEM_QUECTEL_BG9X_GPS)
 static void modem_gps_work(struct k_work *work)
 {
 	int ret;
@@ -1052,6 +1132,7 @@ static void modem_gps_work(struct k_work *work)
 
 	k_work_reschedule_for_queue(&modem_workq, &mdata.gps_query_work, MDM_GPS_DELAY);
 }
+#endif
 
 /* Func: modem_setup
  * Desc: This function is used to setup the modem from zero. The idea
